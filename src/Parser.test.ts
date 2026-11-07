@@ -438,6 +438,226 @@ describe('parse', () => {
   })
 })
 
+describe('numeric formats', () => {
+  test('coerces decimal z.int() options the same way as z.number().int()', () => {
+    const formatted = Parser.parse(['--limit=10'], {
+      options: z.object({ limit: z.int() }),
+    })
+    const checked = Parser.parse(['--limit', '10'], {
+      options: z.object({ limit: z.number().int() }),
+    })
+    expect(formatted.options).toEqual({ limit: 10 })
+    expect(checked.options).toEqual({ limit: 10 })
+  })
+
+  test.each([
+    ['int32', z.int32(), '2147483647', 2147483647],
+    ['uint32', z.uint32(), '4294967295', 4294967295],
+    ['float32', z.float32(), '1.5', 1.5],
+    ['float64', z.float64(), '1.5', 1.5],
+  ] as const)('coerces a decimal %s option', (_label, schema, raw, expected) => {
+    const result = Parser.parse(['--limit', raw], {
+      options: z.object({ limit: schema }),
+    })
+    expect(result.options).toEqual({ limit: expected })
+  })
+
+  test('coerces decimal numeric formats from the environment', () => {
+    expect(Parser.parseEnv(z.object({ LIMIT: z.int() }), { LIMIT: '10' })).toEqual({ LIMIT: 10 })
+    expect(Parser.parseEnv(z.object({ LIMIT: z.number().int() }), { LIMIT: '10' })).toEqual({
+      LIMIT: 10,
+    })
+    expect(Parser.parseEnv(z.object({ LIMIT: z.int32() }), { LIMIT: '2147483647' })).toEqual({
+      LIMIT: 2147483647,
+    })
+    expect(Parser.parseEnv(z.object({ LIMIT: z.uint32() }), { LIMIT: '4294967295' })).toEqual({
+      LIMIT: 4294967295,
+    })
+    expect(Parser.parseEnv(z.object({ LIMIT: z.float32() }), { LIMIT: '1.5' })).toEqual({
+      LIMIT: 1.5,
+    })
+    expect(Parser.parseEnv(z.object({ LIMIT: z.float64() }), { LIMIT: '1.5' })).toEqual({
+      LIMIT: 1.5,
+    })
+  })
+
+  test('keeps Number() hex and exponent spelling', () => {
+    expect(
+      Parser.parse(['--limit', '0x10'], { options: z.object({ limit: z.int() }) }).options,
+    ).toEqual({ limit: 16 })
+    expect(
+      Parser.parse(['--limit', '1e2'], { options: z.object({ limit: z.int() }) }).options,
+    ).toEqual({ limit: 100 })
+    expect(
+      Parser.parse(['--width', '1.25e1'], { options: z.object({ width: z.float64() }) }).options,
+    ).toEqual({ width: 12.5 })
+    expect(Parser.parseEnv(z.object({ LIMIT: z.int() }), { LIMIT: '0x10' })).toEqual({ LIMIT: 16 })
+    expect(Parser.parseEnv(z.object({ LIMIT: z.int() }), { LIMIT: '1e2' })).toEqual({ LIMIT: 100 })
+  })
+
+  test('coerces z.int() through wrappers and applies defaults when omitted', () => {
+    const present = Parser.parse(['--limit=10', '--port=11', '--offset=12', '--size=13'], {
+      options: z.object({
+        limit: z.int().optional(),
+        port: z.int().nullable(),
+        offset: z.int().default(7),
+        size: z.int().readonly(),
+      }),
+    })
+    expect(present.options).toEqual({ limit: 10, port: 11, offset: 12, size: 13 })
+    expect(
+      Parser.parse(['--limit', 'nope'], { options: z.object({ limit: z.int().catch(0) }) }).options,
+    ).toEqual({ limit: 0 })
+    expect(
+      Parser.parse(['--limit', '10'], { options: z.object({ limit: z.int().catch(0) }) }).options,
+    ).toEqual({ limit: 10 })
+
+    const omitted = Parser.parse([], {
+      options: z.object({
+        limit: z.int().optional(),
+        offset: z.int().default(7),
+        size: z.int().prefault(4),
+      }),
+    })
+    expect(omitted.options).toEqual({ offset: 7, size: 4 })
+
+    expect(
+      Parser.parseEnv(
+        z.object({
+          LIMIT: z.int().optional(),
+          PORT: z.int().nullable(),
+          OFFSET: z.int().default(7),
+        }),
+        { PORT: '11' },
+      ),
+    ).toEqual({ PORT: 11, OFFSET: 7 })
+    expect(Parser.parseEnv(z.object({ LIMIT: z.int().default(7) }), { LIMIT: '10' })).toEqual({
+      LIMIT: 10,
+    })
+  })
+
+  test('preserves range, format, and refinement checks after coercion', () => {
+    expect(
+      Parser.parse(['--limit', '10'], {
+        options: z.object({
+          limit: z
+            .int()
+            .min(1)
+            .max(10)
+            .refine((n) => n % 2 === 0, 'even'),
+        }),
+      }).options,
+    ).toEqual({ limit: 10 })
+    expect(optionError(['--limit', '0'], z.int().min(1).max(10))).toEqual([
+      expect.objectContaining({
+        code: 'too_small',
+        path: 'limit',
+        message: 'Too small: expected number to be >=1',
+      }),
+    ])
+    expect(optionError(['--limit', '11'], z.int().min(1).max(10))).toEqual([
+      expect.objectContaining({
+        code: 'too_big',
+        path: 'limit',
+        message: 'Too big: expected number to be <=10',
+      }),
+    ])
+    expect(
+      optionError(
+        ['--limit', '11'],
+        z.int().refine((n) => n % 2 === 0, 'even'),
+      ),
+    ).toEqual([expect.objectContaining({ code: 'custom', path: 'limit', message: 'even' })])
+    expect(optionError(['--limit', '10.5'], z.int())).toEqual([
+      expect.objectContaining({
+        code: 'invalid_type',
+        expected: 'int',
+        path: 'limit',
+        message: 'Invalid input: expected int, received number',
+      }),
+    ])
+    expect(optionError(['--limit', 'nope'], z.int())).toEqual([
+      expect.objectContaining({
+        code: 'invalid_type',
+        expected: 'number',
+        path: 'limit',
+        message: 'Invalid input: expected number, received NaN',
+      }),
+    ])
+    expect(optionError(['--limit', '2147483648'], z.int32())).toEqual([
+      expect.objectContaining({
+        code: 'too_big',
+        path: 'limit',
+        message: 'Too big: expected number to be <=2147483647',
+      }),
+    ])
+    expect(optionError(['--limit', '-1'], z.uint32())).toEqual([
+      expect.objectContaining({
+        code: 'too_small',
+        path: 'limit',
+        message: 'Too small: expected number to be >=0',
+      }),
+    ])
+    expect(optionError(['--limit', '9007199254740992'], z.int())).toEqual([
+      expect.objectContaining({
+        code: 'too_big',
+        path: 'limit',
+        message: 'Too big: expected int to be <=9007199254740991',
+      }),
+    ])
+    expect(optionError(['--limit', '1.7976931348623157e+308'], z.float32())).toEqual([
+      expect.objectContaining({ code: 'too_big', path: 'limit' }),
+    ])
+
+    expect(envError({ LIMIT: '10.5' }, z.int())).toEqual([
+      expect.objectContaining({
+        code: 'invalid_type',
+        expected: 'int',
+        path: 'LIMIT',
+        message: 'Invalid input: expected int, received number',
+      }),
+    ])
+    expect(envError({ LIMIT: 'nope' }, z.int())).toEqual([
+      expect.objectContaining({ code: 'invalid_type', path: 'LIMIT' }),
+    ])
+    expect(envError({ LIMIT: '2147483648' }, z.int32())).toEqual([
+      expect.objectContaining({ code: 'too_big', path: 'LIMIT' }),
+    ])
+    expect(envError({ LIMIT: '-1' }, z.uint32())).toEqual([
+      expect.objectContaining({ code: 'too_small', path: 'LIMIT' }),
+    ])
+    expect(envError({ LIMIT: '0' }, z.int().min(1).max(10))).toEqual([
+      expect.objectContaining({ code: 'too_small', path: 'LIMIT' }),
+    ])
+  })
+
+  test('coerces global z.int() options', () => {
+    const result = Parser.parseGlobals(['--limit', '10', 'deploy'], z.object({ limit: z.int() }))
+    expect(result.parsed).toEqual({ limit: 10 })
+    expect(result.rest).toEqual(['deploy'])
+  })
+})
+
+function optionError(argv: string[], schema: z.ZodType): unknown {
+  try {
+    Parser.parse(argv, { options: z.object({ limit: schema }) })
+    expect.unreachable()
+  } catch (error: any) {
+    expect(error.name).toBe('Incur.ValidationError')
+    return error.fieldErrors
+  }
+}
+
+function envError(source: Record<string, string>, schema: z.ZodType): unknown {
+  try {
+    Parser.parseEnv(z.object({ LIMIT: schema }), source)
+    expect.unreachable()
+  } catch (error: any) {
+    expect(error.name).toBe('Incur.ValidationError')
+    return error.fieldErrors
+  }
+}
+
 describe('parseGlobals', () => {
   test('extracts known globals and returns rest', () => {
     const schema = z.object({ rpcUrl: z.string() })
@@ -465,11 +685,9 @@ describe('parseGlobals', () => {
 
   test('handles short aliases', () => {
     const schema = z.object({ rpcUrl: z.string() })
-    const result = Parser.parseGlobals(
-      ['-r', 'http://example.com', 'deploy'],
-      schema,
-      { rpcUrl: 'r' },
-    )
+    const result = Parser.parseGlobals(['-r', 'http://example.com', 'deploy'], schema, {
+      rpcUrl: 'r',
+    })
     expect(result.parsed).toEqual({ rpcUrl: 'http://example.com' })
     expect(result.rest).toEqual(['deploy'])
   })
@@ -572,9 +790,9 @@ describe('parseGlobals', () => {
       output: z.string(),
       verbose: z.boolean().default(false),
     })
-    expect(() => Parser.parseGlobals(['-ov', 'file'], schema, { output: 'o', verbose: 'v' })).toThrow(
-      /must be last/,
-    )
+    expect(() =>
+      Parser.parseGlobals(['-ov', 'file'], schema, { output: 'o', verbose: 'v' }),
+    ).toThrow(/must be last/)
   })
 
   test('short flag value-taking as last in stacked alias', () => {
