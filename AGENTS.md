@@ -19,6 +19,7 @@
 - **Skip braces for single-statement blocks** — omit `{}` for single-statement `if`, `for`, etc.
 - **Destructure when accessing multiple properties** — prefer `const { a, b } = options` over repeated `options.a`, `options.b`.
 - **IIFE for multi-branch assignment** — use an IIFE instead of nested ternaries when assigning a value from multiple conditions. Add a comment to every branch explaining the case.
+- **Zod number detection** — detect numeric schemas with `instanceof z.ZodNumber`. `constructor.name === 'ZodNumber'` misses Zod 4 `ZodNumberFormat` (`z.int()`, `z.int32()`, `z.uint32()`, `z.float32()`, `z.float64()`), which still carry the `ZodNumber` trait. Coerce with `Number()` and leave format, range, and refinement checks on the original schema.
 
 ## Type Inference Conventions
 

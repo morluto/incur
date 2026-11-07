@@ -1,4 +1,4 @@
-import type { z } from 'zod'
+import { z } from 'zod'
 
 import type { FieldError } from './Errors.js'
 import { ParseError, ValidationError } from './Errors.js'
@@ -218,6 +218,16 @@ function unwrap(schema: z.ZodType): z.ZodType {
   return s
 }
 
+/**
+ * Matches `z.number()` and Zod 4 numeric formats (`z.int()`, `z.int32()`, `z.uint32()`, `z.float32()`, `z.float64()`).
+ *
+ * Those formats are `ZodNumberFormat`. Zod records the `ZodNumber` trait on them, so `instanceof` matches.
+ * `constructor.name === 'ZodNumber'` does not.
+ */
+function isNumberSchema(schema: z.ZodType): boolean {
+  return schema instanceof z.ZodNumber
+}
+
 /** Checks if an option's inner type is boolean. */
 function isBooleanOption(name: string, schema: z.ZodObject<any> | undefined): boolean {
   if (!schema) return false
@@ -313,9 +323,8 @@ export function parseEnv<const env extends z.ZodObject<any>>(
 /** Coerces an env var string to the type expected by the schema field. */
 function coerceEnv(value: string, field: z.ZodType): unknown {
   const inner = unwrap(field)
-  const typeName = inner.constructor.name
-  if (typeName === 'ZodNumber') return Number(value)
-  if (typeName === 'ZodBoolean') return value === 'true' || value === '1'
+  if (isNumberSchema(inner)) return Number(value)
+  if (inner.constructor.name === 'ZodBoolean') return value === 'true' || value === '1'
   return value
 }
 
@@ -324,14 +333,9 @@ function coerce(value: unknown, name: string, schema: z.ZodObject<any>): unknown
   const field = schema.shape[name]
   if (!field) return value
   const inner = unwrap(field)
-  const typeName = inner.constructor.name
 
-  if (typeName === 'ZodNumber' && typeof value === 'string') {
-    return Number(value)
-  }
-  if (typeName === 'ZodBoolean' && typeof value === 'string') {
-    return value === 'true'
-  }
+  if (isNumberSchema(inner) && typeof value === 'string') return Number(value)
+  if (inner.constructor.name === 'ZodBoolean' && typeof value === 'string') return value === 'true'
   return value
 }
 
